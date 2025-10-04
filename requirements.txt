@@ -3,3 +3,4 @@ playwright
 bs4
 requests
 facebook-business
+python -m playwright install
