@@ -1,7 +1,5 @@
 streamlit
 playwright
-beautifulsoup4
+bs4
 requests
-selenium
-webdriver-manager
-schedule
+facebook-business
