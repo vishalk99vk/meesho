@@ -1,0 +1,5 @@
+streamlit
+playwright
+bs4
+requests
+facebook-business
