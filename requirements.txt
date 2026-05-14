@@ -1,2 +1,5 @@
 streamlit
-playwright
+pandas
+openpyxl
+requests
+xlrd
