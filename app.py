@@ -21,18 +21,18 @@ st.title("BAT JSON Report Updater")
 st.write("""
 Upload one or multiple Excel files.
 
-The app will:
+This app will:
 - Read JSON URLs from pushed_data column
 - Extract Facing Count
 - Extract Annotated Image Link
 - Detect Missing SKU ID
-- Extract Visit ID
+- Extract visit_number
 - Extract Market ISO
-- Download updated Excel
+- Generate updated Excel file
 """)
 
 # ---------------------------------------------------
-# FILE UPLOAD
+# FILE UPLOADER
 # ---------------------------------------------------
 
 uploaded_files = st.file_uploader(
@@ -70,12 +70,13 @@ def fetch_json(url):
 
         return None
 
-    except:
+    except Exception:
         return None
 
 
 @lru_cache(maxsize=50000)
 def cached_fetch_json(url):
+
     return fetch_json(url)
 
 
@@ -99,7 +100,7 @@ def extract_facing_count(data):
 
         return total_facing
 
-    except:
+    except Exception:
         return 0
 
 
@@ -109,25 +110,25 @@ def extract_annotated_link(data):
 
         stores = data.get("stores", [])
 
-        annotated_links = []
+        links = []
 
         for store in stores:
 
             images = store.get("images", [])
 
-            for img in images:
+            for image in images:
 
-                link = img.get("annotated_image_path")
+                link = image.get("annotated_image_path")
 
                 if link:
-                    annotated_links.append(link)
+                    links.append(link)
 
-        if not annotated_links:
+        if len(links) == 0:
             return 0
 
-        return ", ".join(annotated_links)
+        return ", ".join(links)
 
-    except:
+    except Exception:
         return 0
 
 
@@ -159,11 +160,11 @@ def check_missing_sku_id(data):
 
         return "NO"
 
-    except:
+    except Exception:
         return 0
 
 
-def extract_visit_id(data):
+def extract_visit_number(data):
 
     try:
 
@@ -171,14 +172,21 @@ def extract_visit_id(data):
 
         for store in stores:
 
-            visit_id = str(store.get("visit_number", "")).strip()
+            visit_number = store.get("visit_number")
 
-            if visit_id:
-                return visit_id
+            if visit_number is None:
+                return 0
+
+            visit_number = str(visit_number).strip()
+
+            if visit_number == "":
+                return 0
+
+            return visit_number
 
         return 0
 
-    except:
+    except Exception:
         return 0
 
 
@@ -189,11 +197,11 @@ def extract_market_iso(data):
         market_iso = data.get("market_iso")
 
         if market_iso:
-            return market_iso
+            return str(market_iso)
 
         return 0
 
-    except:
+    except Exception:
         return 0
 
 
@@ -202,17 +210,18 @@ def process_url(url):
     facing = 0
     annotated = 0
     missing_sku = 0
-    visit_id = 0
+    visit_number = 0
     market_iso = 0
 
     try:
 
         if not str(url).startswith("http"):
+
             return (
                 facing,
                 annotated,
                 missing_sku,
-                visit_id,
+                visit_number,
                 market_iso
             )
 
@@ -221,21 +230,26 @@ def process_url(url):
         if json_data:
 
             facing = extract_facing_count(json_data)
+
             annotated = extract_annotated_link(json_data)
+
             missing_sku = check_missing_sku_id(json_data)
-            visit_id = extract_visit_id(json_data)
+
+            visit_number = extract_visit_number(json_data)
+
             market_iso = extract_market_iso(json_data)
 
-    except:
+    except Exception:
         pass
 
     return (
         facing,
         annotated,
         missing_sku,
-        visit_id,
+        visit_number,
         market_iso
     )
+
 
 # ---------------------------------------------------
 # MAIN PROCESS
@@ -255,6 +269,7 @@ if uploaded_files:
 
             try:
 
+                # Read Excel
                 df = pd.read_excel(uploaded_file)
 
                 if "pushed_data" not in df.columns:
@@ -262,9 +277,15 @@ if uploaded_files:
                     st.error(
                         f"'pushed_data' column not found in {uploaded_file.name}"
                     )
+
                     continue
 
-                urls = df["pushed_data"].fillna("").astype(str).tolist()
+                urls = (
+                    df["pushed_data"]
+                    .fillna("")
+                    .astype(str)
+                    .tolist()
+                )
 
                 total = len(urls)
 
@@ -285,26 +306,30 @@ if uploaded_files:
                         if i % 100 == 0:
 
                             status_text.text(
-                                f"Processed {i+1:,} / {total:,}"
+                                f"Processed {i + 1:,} / {total:,}"
                             )
 
                             progress_bar.progress(
                                 min((i + 1) / total, 1.0)
                             )
 
-                # -------------------------------------
-                # CREATE OUTPUT COLUMNS
-                # -------------------------------------
+                # -----------------------------------------
+                # ADD OUTPUT COLUMNS
+                # -----------------------------------------
 
                 df["Facing_Count"] = [r[0] for r in results]
+
                 df["Annotated_Image_Link"] = [r[1] for r in results]
+
                 df["Missing_SKU_ID"] = [r[2] for r in results]
-                df["Visit_ID"] = [r[3] for r in results]
+
+                df["visit_number"] = [r[3] for r in results]
+
                 df["Market_ISO"] = [r[4] for r in results]
 
-                # -------------------------------------
-                # SAVE FILE
-                # -------------------------------------
+                # -----------------------------------------
+                # SAVE OUTPUT FILE
+                # -----------------------------------------
 
                 output = BytesIO()
 
