@@ -10,28 +10,28 @@ from io import BytesIO
 # ---------------------------------------------------
 
 st.set_page_config(
-    page_title="BAT Output JSON Updater",
+    page_title="BAT JSON Updater",
     layout="wide"
 )
 
-st.title("BAT Output JSON Report Updater")
+st.title("BAT JSON Report Updater")
 
 st.write("""
-Upload one or multiple BAT Excel files.
+Upload one or multiple Excel files.
 
-This app will:
-- Process only 'Output JSONs Report' sheet
-- Read JSON links from pushed_data column
+The app will:
+- Read JSON URLs from the 'pushed_data' column
 - Extract Facing Count
 - Extract Annotated Image Link
 - Detect Missing SKU ID
 - Extract Visit ID
-- Keep all other sheets unchanged
-- Generate updated Excel automatically
+- Extract Market ISO
+- Add new columns to the Excel
+- Download updated file
 """)
 
 # ---------------------------------------------------
-# FILE UPLOADER
+# FILE UPLOAD
 # ---------------------------------------------------
 
 uploaded_files = st.file_uploader(
@@ -40,7 +40,11 @@ uploaded_files = st.file_uploader(
     accept_multiple_files=True
 )
 
-TARGET_SHEET = "Output JSONs Report"
+# ---------------------------------------------------
+# REQUEST SESSION
+# ---------------------------------------------------
+
+session = requests.Session()
 
 # ---------------------------------------------------
 # FUNCTIONS
@@ -50,7 +54,7 @@ def fetch_json(url):
 
     try:
 
-        response = requests.get(url, timeout=30)
+        response = session.get(url, timeout=30)
 
         if response.status_code == 200:
             return response.json()
@@ -164,13 +168,30 @@ def extract_visit_id(data):
         return 0
 
 
+def extract_market_iso(data):
+
+    try:
+
+        market_iso = data.get("market_iso")
+
+        if market_iso:
+            return market_iso
+
+        return 0
+
+    except:
+        return 0
+
+
 # ---------------------------------------------------
 # MAIN PROCESS
 # ---------------------------------------------------
 
 if uploaded_files:
 
-    start_processing = st.button("Start Processing")
+    st.info(f"{len(uploaded_files)} file(s) uploaded")
+
+    start_processing = st.button("🚀 Start Processing")
 
     if start_processing:
 
@@ -182,32 +203,13 @@ if uploaded_files:
 
             try:
 
-                excel_file = pd.ExcelFile(uploaded_file)
-
-                sheet_names = excel_file.sheet_names
-
-                if TARGET_SHEET not in sheet_names:
-
-                    st.error(
-                        f"'{TARGET_SHEET}' sheet not found in {uploaded_file.name}"
-                    )
-                    continue
-
-                all_sheets = {}
-
-                for sheet in sheet_names:
-
-                    all_sheets[sheet] = pd.read_excel(
-                        uploaded_file,
-                        sheet_name=sheet
-                    )
-
-                df = all_sheets[TARGET_SHEET]
+                # Read single sheet Excel
+                df = pd.read_excel(uploaded_file)
 
                 if "pushed_data" not in df.columns:
 
                     st.error(
-                        f"'pushed_data' column not found in {TARGET_SHEET}"
+                        f"'pushed_data' column not found in {uploaded_file.name}"
                     )
                     continue
 
@@ -215,12 +217,17 @@ if uploaded_files:
                 annotated_links = []
                 missing_sku_status = []
                 visit_ids = []
+                market_isos = []
 
                 total_rows = len(df)
 
                 progress_bar = st.progress(0)
 
                 status_text = st.empty()
+
+                # -----------------------------------------
+                # PROCESS ROWS
+                # -----------------------------------------
 
                 for idx, row in df.iterrows():
 
@@ -234,6 +241,7 @@ if uploaded_files:
                     annotated = 0
                     missing_sku = 0
                     visit_id = 0
+                    market_iso = 0
 
                     if url.startswith("http"):
 
@@ -249,42 +257,59 @@ if uploaded_files:
 
                             visit_id = extract_visit_id(json_data)
 
+                            market_iso = extract_market_iso(json_data)
+
                     facing_counts.append(facing)
                     annotated_links.append(annotated)
                     missing_sku_status.append(missing_sku)
                     visit_ids.append(visit_id)
+                    market_isos.append(market_iso)
 
                     progress_bar.progress((idx + 1) / total_rows)
+
+                # -----------------------------------------
+                # ADD NEW COLUMNS
+                # -----------------------------------------
 
                 df["Facing_Count"] = facing_counts
                 df["Annotated_Image_Link"] = annotated_links
                 df["Missing_SKU_ID"] = missing_sku_status
                 df["Visit_ID"] = visit_ids
+                df["Market_ISO"] = market_isos
 
-                all_sheets[TARGET_SHEET] = df
+                # -----------------------------------------
+                # SAVE FILE
+                # -----------------------------------------
 
                 output = BytesIO()
 
-                with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                with pd.ExcelWriter(
+                    output,
+                    engine="openpyxl"
+                ) as writer:
 
-                    for sheet_name, sheet_df in all_sheets.items():
-
-                        sheet_df.to_excel(
-                            writer,
-                            sheet_name=sheet_name,
-                            index=False
-                        )
+                    df.to_excel(
+                        writer,
+                        index=False
+                    )
 
                 output.seek(0)
 
-                output_filename = f"updated_{uploaded_file.name}"
+                output_filename = (
+                    f"updated_{uploaded_file.name}"
+                )
 
-                st.success(f"Completed: {uploaded_file.name}")
+                st.success(
+                    f"Completed: {uploaded_file.name}"
+                )
 
-                st.dataframe(df.head())
+                st.dataframe(
+                    df.head(),
+                    use_container_width=True
+                )
 
                 st.download_button(
-                    label=f"Download {output_filename}",
+                    label=f"📥 Download {output_filename}",
                     data=output,
                     file_name=output_filename,
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -293,5 +318,5 @@ if uploaded_files:
             except Exception as e:
 
                 st.error(
-                    f"Error Processing {uploaded_file.name}: {str(e)}"
+                    f"Error processing {uploaded_file.name}: {str(e)}"
                 )
