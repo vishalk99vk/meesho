@@ -4,6 +4,8 @@ import streamlit as st
 import pandas as pd
 import requests
 from io import BytesIO
+from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
 
 # ---------------------------------------------------
 # PAGE CONFIG
@@ -20,14 +22,13 @@ st.write("""
 Upload one or multiple Excel files.
 
 The app will:
-- Read JSON URLs from the 'pushed_data' column
+- Read JSON URLs from pushed_data column
 - Extract Facing Count
 - Extract Annotated Image Link
 - Detect Missing SKU ID
 - Extract Visit ID
 - Extract Market ISO
-- Add new columns to the Excel
-- Download updated file
+- Download updated Excel
 """)
 
 # ---------------------------------------------------
@@ -46,6 +47,14 @@ uploaded_files = st.file_uploader(
 
 session = requests.Session()
 
+adapter = requests.adapters.HTTPAdapter(
+    pool_connections=100,
+    pool_maxsize=100
+)
+
+session.mount("http://", adapter)
+session.mount("https://", adapter)
+
 # ---------------------------------------------------
 # FUNCTIONS
 # ---------------------------------------------------
@@ -63,6 +72,11 @@ def fetch_json(url):
 
     except:
         return None
+
+
+@lru_cache(maxsize=50000)
+def cached_fetch_json(url):
+    return fetch_json(url)
 
 
 def extract_facing_count(data):
@@ -108,7 +122,7 @@ def extract_annotated_link(data):
                 if link:
                     annotated_links.append(link)
 
-        if len(annotated_links) == 0:
+        if not annotated_links:
             return 0
 
         return ", ".join(annotated_links)
@@ -183,17 +197,55 @@ def extract_market_iso(data):
         return 0
 
 
+def process_url(url):
+
+    facing = 0
+    annotated = 0
+    missing_sku = 0
+    visit_id = 0
+    market_iso = 0
+
+    try:
+
+        if not str(url).startswith("http"):
+            return (
+                facing,
+                annotated,
+                missing_sku,
+                visit_id,
+                market_iso
+            )
+
+        json_data = cached_fetch_json(url)
+
+        if json_data:
+
+            facing = extract_facing_count(json_data)
+            annotated = extract_annotated_link(json_data)
+            missing_sku = check_missing_sku_id(json_data)
+            visit_id = extract_visit_id(json_data)
+            market_iso = extract_market_iso(json_data)
+
+    except:
+        pass
+
+    return (
+        facing,
+        annotated,
+        missing_sku,
+        visit_id,
+        market_iso
+    )
+
 # ---------------------------------------------------
 # MAIN PROCESS
 # ---------------------------------------------------
 
 if uploaded_files:
 
-    st.info(f"{len(uploaded_files)} file(s) uploaded")
+    st.success(f"{len(uploaded_files)} file(s) uploaded")
 
-    start_processing = st.button("🚀 Start Processing")
-
-    if start_processing:
+    if st.button("🚀 Start Processing"):
 
         for uploaded_file in uploaded_files:
 
@@ -203,7 +255,6 @@ if uploaded_files:
 
             try:
 
-                # Read single sheet Excel
                 df = pd.read_excel(uploaded_file)
 
                 if "pushed_data" not in df.columns:
@@ -213,73 +264,47 @@ if uploaded_files:
                     )
                     continue
 
-                facing_counts = []
-                annotated_links = []
-                missing_sku_status = []
-                visit_ids = []
-                market_isos = []
+                urls = df["pushed_data"].fillna("").astype(str).tolist()
 
-                total_rows = len(df)
+                total = len(urls)
 
                 progress_bar = st.progress(0)
 
                 status_text = st.empty()
 
-                # -----------------------------------------
-                # PROCESS ROWS
-                # -----------------------------------------
+                results = []
 
-                for idx, row in df.iterrows():
+                with ThreadPoolExecutor(max_workers=20) as executor:
 
-                    status_text.text(
-                        f"Processing Row {idx + 1} of {total_rows}"
-                    )
+                    for i, result in enumerate(
+                        executor.map(process_url, urls)
+                    ):
 
-                    url = str(row["pushed_data"]).strip()
+                        results.append(result)
 
-                    facing = 0
-                    annotated = 0
-                    missing_sku = 0
-                    visit_id = 0
-                    market_iso = 0
+                        if i % 100 == 0:
 
-                    if url.startswith("http"):
+                            status_text.text(
+                                f"Processed {i+1:,} / {total:,}"
+                            )
 
-                        json_data = fetch_json(url)
+                            progress_bar.progress(
+                                min((i + 1) / total, 1.0)
+                            )
 
-                        if json_data:
+                # -------------------------------------
+                # CREATE OUTPUT COLUMNS
+                # -------------------------------------
 
-                            facing = extract_facing_count(json_data)
+                df["Facing_Count"] = [r[0] for r in results]
+                df["Annotated_Image_Link"] = [r[1] for r in results]
+                df["Missing_SKU_ID"] = [r[2] for r in results]
+                df["Visit_ID"] = [r[3] for r in results]
+                df["Market_ISO"] = [r[4] for r in results]
 
-                            annotated = extract_annotated_link(json_data)
-
-                            missing_sku = check_missing_sku_id(json_data)
-
-                            visit_id = extract_visit_id(json_data)
-
-                            market_iso = extract_market_iso(json_data)
-
-                    facing_counts.append(facing)
-                    annotated_links.append(annotated)
-                    missing_sku_status.append(missing_sku)
-                    visit_ids.append(visit_id)
-                    market_isos.append(market_iso)
-
-                    progress_bar.progress((idx + 1) / total_rows)
-
-                # -----------------------------------------
-                # ADD NEW COLUMNS
-                # -----------------------------------------
-
-                df["Facing_Count"] = facing_counts
-                df["Annotated_Image_Link"] = annotated_links
-                df["Missing_SKU_ID"] = missing_sku_status
-                df["Visit_ID"] = visit_ids
-                df["Market_ISO"] = market_isos
-
-                # -----------------------------------------
+                # -------------------------------------
                 # SAVE FILE
-                # -----------------------------------------
+                # -------------------------------------
 
                 output = BytesIO()
 
