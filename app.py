@@ -1,372 +1,88 @@
-# streamlit_app.py
-
 import streamlit as st
 import pandas as pd
-import requests
+import asyncio
+import aiohttp
 from io import BytesIO
-from concurrent.futures import ThreadPoolExecutor
-from functools import lru_cache
 
 # ---------------------------------------------------
 # PAGE CONFIG
 # ---------------------------------------------------
-
-st.set_page_config(
-    page_title="BAT JSON Updater",
-    layout="wide"
-)
-
+st.set_page_config(page_title="BAT JSON Updater", layout="wide")
 st.title("BAT JSON Report Updater")
 
-st.write("""
-Upload one or multiple Excel files.
-
-This app will:
-- Read JSON URLs from pushed_data column
-- Extract Facing Count
-- Extract Annotated Image Link
-- Detect Missing SKU ID
-- Extract visit_number
-- Extract Market ISO
-- Generate updated Excel file
-""")
+# ---------------------------------------------------
+# EXTRACTION LOGIC (Synchronous helper)
+# ---------------------------------------------------
+def extract_from_json(data):
+    if not data: return 0, 0, 0, 0, 0
+    
+    # Extract Facing Count
+    total_facing = sum(item.get("facings", 0) for store in data.get("stores", []) 
+                       for item in store.get("kpis", {}).get("facing_count", []))
+    
+    # Extract Links
+    links = [img.get("annotated_image_path") for store in data.get("stores", []) 
+             for img in store.get("images", []) if img.get("annotated_image_path")]
+    annotated = ", ".join(links) if links else 0
+    
+    # Missing SKU
+    sku_found = False
+    missing_sku = "NO"
+    for store in data.get("stores", []):
+        for item in store.get("kpis", {}).get("facing_count", []):
+            sku_found = True
+            if not str(item.get("sku_id", "")).strip():
+                missing_sku = "YES"
+    if not sku_found: missing_sku = 0
+    
+    # Visit Number & Market
+    visit_number = next((str(s.get("visit_number", "")).strip() or 0 for s in data.get("stores", [])), 0)
+    market_iso = data.get("market_iso") or 0
+    
+    return total_facing, annotated, missing_sku, visit_number, market_iso
 
 # ---------------------------------------------------
-# FILE UPLOADER
+# ASYNC FETCHING
 # ---------------------------------------------------
-
-uploaded_files = st.file_uploader(
-    "Upload Excel Files",
-    type=["xlsx", "xlsm", "xls"],
-    accept_multiple_files=True
-)
-
-# ---------------------------------------------------
-# REQUEST SESSION
-# ---------------------------------------------------
-
-session = requests.Session()
-
-adapter = requests.adapters.HTTPAdapter(
-    pool_connections=100,
-    pool_maxsize=100
-)
-
-session.mount("http://", adapter)
-session.mount("https://", adapter)
-
-# ---------------------------------------------------
-# FUNCTIONS
-# ---------------------------------------------------
-
-def fetch_json(url):
-
+async def fetch_url(session, url):
+    if not str(url).startswith("http"): return (0, 0, 0, 0, 0)
     try:
-
-        response = session.get(url, timeout=30)
-
-        if response.status_code == 200:
-            return response.json()
-
-        return None
-
-    except Exception:
-        return None
-
-
-@lru_cache(maxsize=50000)
-def cached_fetch_json(url):
-
-    return fetch_json(url)
-
-
-def extract_facing_count(data):
-
-    try:
-
-        total_facing = 0
-
-        stores = data.get("stores", [])
-
-        for store in stores:
-
-            kpis = store.get("kpis", {})
-
-            facing_data = kpis.get("facing_count", [])
-
-            for item in facing_data:
-
-                total_facing += item.get("facings", 0)
-
-        return total_facing
-
-    except Exception:
-        return 0
-
-
-def extract_annotated_link(data):
-
-    try:
-
-        stores = data.get("stores", [])
-
-        links = []
-
-        for store in stores:
-
-            images = store.get("images", [])
-
-            for image in images:
-
-                link = image.get("annotated_image_path")
-
-                if link:
-                    links.append(link)
-
-        if len(links) == 0:
-            return 0
-
-        return ", ".join(links)
-
-    except Exception:
-        return 0
-
-
-def check_missing_sku_id(data):
-
-    try:
-
-        stores = data.get("stores", [])
-
-        sku_found = False
-
-        for store in stores:
-
-            kpis = store.get("kpis", {})
-
-            facing_data = kpis.get("facing_count", [])
-
-            for item in facing_data:
-
-                sku_found = True
-
-                sku_id = str(item.get("sku_id", "")).strip()
-
-                if sku_id == "":
-                    return "YES"
-
-        if not sku_found:
-            return 0
-
-        return "NO"
-
-    except Exception:
-        return 0
-
-
-def extract_visit_number(data):
-
-    try:
-
-        stores = data.get("stores", [])
-
-        for store in stores:
-
-            visit_number = store.get("visit_number")
-
-            if visit_number is None:
-                return 0
-
-            visit_number = str(visit_number).strip()
-
-            if visit_number == "":
-                return 0
-
-            return visit_number
-
-        return 0
-
-    except Exception:
-        return 0
-
-
-def extract_market_iso(data):
-
-    try:
-
-        market_iso = data.get("market_iso")
-
-        if market_iso:
-            return str(market_iso)
-
-        return 0
-
-    except Exception:
-        return 0
-
-
-def process_url(url):
-
-    facing = 0
-    annotated = 0
-    missing_sku = 0
-    visit_number = 0
-    market_iso = 0
-
-    try:
-
-        if not str(url).startswith("http"):
-
-            return (
-                facing,
-                annotated,
-                missing_sku,
-                visit_number,
-                market_iso
-            )
-
-        json_data = cached_fetch_json(url)
-
-        if json_data:
-
-            facing = extract_facing_count(json_data)
-
-            annotated = extract_annotated_link(json_data)
-
-            missing_sku = check_missing_sku_id(json_data)
-
-            visit_number = extract_visit_number(json_data)
-
-            market_iso = extract_market_iso(json_data)
-
-    except Exception:
-        pass
-
-    return (
-        facing,
-        annotated,
-        missing_sku,
-        visit_number,
-        market_iso
-    )
-
+        async with session.get(url, timeout=15) as response:
+            if response.status == 200:
+                return extract_from_json(await response.json())
+    except: pass
+    return (0, 0, 0, 0, 0)
+
+async def process_all_urls(urls):
+    connector = aiohttp.TCPConnector(limit=100) # Adjust based on server capacity
+    async with aiohttp.ClientSession(connector=connector) as session:
+        tasks = [fetch_url(session, url) for url in urls]
+        return await asyncio.gather(*tasks)
 
 # ---------------------------------------------------
-# MAIN PROCESS
+# MAIN APP
 # ---------------------------------------------------
+uploaded_files = st.file_uploader("Upload Excel Files", type=["xlsx"], accept_multiple_files=True)
 
-if uploaded_files:
-
-    st.success(f"{len(uploaded_files)} file(s) uploaded")
-
-    if st.button("🚀 Start Processing"):
-
-        for uploaded_file in uploaded_files:
-
-            st.divider()
-
-            st.subheader(f"Processing: {uploaded_file.name}")
-
-            try:
-
-                # Read Excel
-                df = pd.read_excel(uploaded_file)
-
-                if "pushed_data" not in df.columns:
-
-                    st.error(
-                        f"'pushed_data' column not found in {uploaded_file.name}"
-                    )
-
-                    continue
-
-                urls = (
-                    df["pushed_data"]
-                    .fillna("")
-                    .astype(str)
-                    .tolist()
-                )
-
-                total = len(urls)
-
-                progress_bar = st.progress(0)
-
-                status_text = st.empty()
-
-                results = []
-
-                with ThreadPoolExecutor(max_workers=20) as executor:
-
-                    for i, result in enumerate(
-                        executor.map(process_url, urls)
-                    ):
-
-                        results.append(result)
-
-                        if i % 100 == 0:
-
-                            status_text.text(
-                                f"Processed {i + 1:,} / {total:,}"
-                            )
-
-                            progress_bar.progress(
-                                min((i + 1) / total, 1.0)
-                            )
-
-                # -----------------------------------------
-                # ADD OUTPUT COLUMNS
-                # -----------------------------------------
-
-                df["Facing_Count"] = [r[0] for r in results]
-
-                df["Annotated_Image_Link"] = [r[1] for r in results]
-
-                df["Missing_SKU_ID"] = [r[2] for r in results]
-
-                df["visit_number"] = [r[3] for r in results]
-
-                df["Market_ISO"] = [r[4] for r in results]
-
-                # -----------------------------------------
-                # SAVE OUTPUT FILE
-                # -----------------------------------------
-
-                output = BytesIO()
-
-                with pd.ExcelWriter(
-                    output,
-                    engine="openpyxl"
-                ) as writer:
-
-                    df.to_excel(
-                        writer,
-                        index=False
-                    )
-
-                output.seek(0)
-
-                output_filename = (
-                    f"updated_{uploaded_file.name}"
-                )
-
-                st.success(
-                    f"Completed: {uploaded_file.name}"
-                )
-
-                st.dataframe(
-                    df.head(),
-                    use_container_width=True
-                )
-
-                st.download_button(
-                    label=f"📥 Download {output_filename}",
-                    data=output,
-                    file_name=output_filename,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-
-            except Exception as e:
-
-                st.error(
-                    f"Error processing {uploaded_file.name}: {str(e)}"
-                )
+if uploaded_files and st.button("🚀 Start Processing"):
+    for uploaded_file in uploaded_files:
+        df = pd.read_excel(uploaded_file)
+        if "pushed_data" not in df.columns:
+            st.error(f"'pushed_data' missing in {uploaded_file.name}")
+            continue
+            
+        urls = df["pushed_data"].fillna("").astype(str).tolist()
+        
+        with st.spinner(f"Processing {len(urls)} rows..."):
+            results = asyncio.run(process_all_urls(urls))
+            
+        df["Facing_Count"] = [r[0] for r in results]
+        df["Annotated_Image_Link"] = [r[1] for r in results]
+        df["Missing_SKU_ID"] = [r[2] for r in results]
+        df["visit_number"] = [r[3] for r in results]
+        df["Market_ISO"] = [r[4] for r in results]
+        
+        output = BytesIO()
+        df.to_excel(output, index=False)
+        st.download_button(f"📥 Download {uploaded_file.name}", output.getvalue(), f"updated_{uploaded_file.name}")
+        st.success(f"Finished {uploaded_file.name}")
