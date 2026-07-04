@@ -2,11 +2,9 @@ import streamlit as st
 import pandas as pd
 import asyncio
 import aiohttp
-import os
 
-# 1. Logic for processing
+# Helper: Extraction Logic
 def extract_from_json(data):
-    # ... (Keep your extraction logic exactly as provided before) ...
     if not data: return 0, 0, 0, 0, 0
     total_facing = sum(item.get("facings", 0) for store in data.get("stores", []) for item in store.get("kpis", {}).get("facing_count", []))
     links = [img.get("annotated_image_path") for store in data.get("stores", []) for img in store.get("images", []) if img.get("annotated_image_path")]
@@ -28,16 +26,16 @@ async def run_batch(urls):
     async with aiohttp.ClientSession(connector=connector) as session:
         return await asyncio.gather(*(fetch_and_process(session, url) for url in urls))
 
-# 2. Main Process
-st.title("Big Data JSON Processor")
-uploaded_file = st.file_uploader("Upload CSV/Excel", type=["csv", "xlsx"])
+# Main UI
+st.title("Big Data CSV Processor")
+uploaded_file = st.file_uploader("Upload CSV (Required for 40M rows)", type=["csv"])
 
-if uploaded_file and st.button("🚀 Start Massive Processing"):
+if uploaded_file and st.button("🚀 Start Processing"):
     output_filename = "processed_results.csv"
-    chunk_size = 5000  # Process 5k rows at a time
+    chunk_size = 5000 
     
-    # Use chunksize to avoid OOM
-    reader = pd.read_csv(uploaded_file, chunksize=chunk_size) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file, chunksize=chunk_size)
+    # Process only as CSV
+    reader = pd.read_csv(uploaded_file, chunksize=chunk_size)
     
     for i, chunk in enumerate(reader):
         urls = chunk["pushed_data"].fillna("").astype(str).tolist()
@@ -49,11 +47,10 @@ if uploaded_file and st.button("🚀 Start Massive Processing"):
         chunk["visit_number"] = [r[3] for r in results]
         chunk["Market_ISO"] = [r[4] for r in results]
         
-        # Append to CSV on disk (don't keep in RAM)
+        # Append to CSV
         mode = 'w' if i == 0 else 'a'
-        header = True if i == 0 else False
-        chunk.to_csv(output_filename, mode=mode, index=False, header=header)
-        st.write(f"Processed batch {i+1}")
+        chunk.to_csv(output_filename, mode=mode, index=False, header=(i == 0))
+        st.write(f"Processed batch {i+1} ({ (i+1)*chunk_size } rows)")
 
     st.success("Processing Complete!")
     with open(output_filename, "rb") as f:
